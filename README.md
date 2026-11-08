@@ -220,7 +220,9 @@ zig build
 zig build test
 ```
 
-Written with Claude.
+Built with [Claude Code](https://claude.com/claude-code). I defined the
+features and the API requirements, reviewed the results and tested the
+library; Claude wrote most of the code.
 
 ## License
 
