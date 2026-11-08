@@ -108,6 +108,57 @@ exif.removeThumbnail();
 exif.clearAll();                // everything; writing it removes the EXIF segment
 ```
 
+### JSON
+
+`exifToJson` returns every tag as JSON, keyed by name:
+
+```zig
+var exif = (try wexif.readFile(gpa, io, "photo.jpg")) orelse return;
+defer exif.deinit();
+
+const json = try wexif.exifToJson(gpa, &exif);
+defer gpa.free(json);
+std.debug.print("{s}\n", .{json});
+```
+
+```json
+{
+  "byteOrder": "big",
+  "ifd0": {
+    "ImageDescription": "Sunset",
+    "Make": "Canon",
+    "Model": "EOS R5",
+    "Orientation": 6,
+    "XPTitle": "Café title"
+  },
+  "exif": {
+    "ExposureTime": 0.004,
+    "FNumber": 2.8,
+    "ISOSpeedRatings": 400,
+    "DateTimeOriginal": "2024:05:01 10:20:30",
+    "ComponentsConfiguration": "01020300",
+    "ExposureBiasValue": -0.7,
+    "UserComment": "Shot on a phone"
+  },
+  "gps": {
+    "GPSLatitudeRef": "N",
+    "GPSLatitude": [41, 0, 29.52],
+    "GPSLongitudeRef": "E",
+    "GPSLongitude": [28, 58, 42.24]
+  },
+  "location": { "latitude": 41.0082, "longitude": 28.9784, "altitude": 35 },
+  "thumbnailSize": 909
+}
+```
+
+- Text becomes a string; UserComment and the Windows `XP*` tags are decoded.
+- One number becomes a number, several become an array; rationals become decimals.
+- Other binary data becomes a hex string, or `"(N bytes)"` above 256 bytes (e.g. MakerNote).
+- Unknown tags are keyed as `"0xNNNN"`; empty IFDs are omitted.
+
+For compact output, other limits, or writing straight to a file or socket, use
+`wexif.json.write(&exif, writer, .{ .whitespace = .minified, .max_binary_len = 64 })`.
+
 ### Writing
 
 ```zig
@@ -126,6 +177,7 @@ All memory is owned by `Exif`; `set*` copies its input, and `deinit` frees every
 ```sh
 zig build
 ./zig-out/bin/wexif show photo.jpg
+./zig-out/bin/wexif json photo.jpg                   # all EXIF as JSON
 ./zig-out/bin/wexif set photo.jpg out.jpg Artist="Jane" ExposureTime=1/250 FNumber=2.8
 ./zig-out/bin/wexif set photo.jpg out.jpg ifd1.Orientation=1 exif.0xA431:ascii=SN123
 ./zig-out/bin/wexif rm photo.jpg out.jpg LensModel

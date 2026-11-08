@@ -9,6 +9,7 @@ const IfdKind = wexif.IfdKind;
 const usage =
     \\Usage:
     \\  wexif show  <in.jpg>
+    \\  wexif json  <in.jpg>
     \\  wexif set   <in.jpg> <out.jpg> TAG=VALUE...
     \\  wexif rm    <in.jpg> <out.jpg> TAG...
     \\  wexif gps   <in.jpg> <out.jpg> <lat> <lon> [altitude_m]
@@ -42,6 +43,17 @@ pub fn main(init: std.process.Init) !void {
         };
         defer ex.deinit();
         try show(out, &ex);
+        return;
+    }
+
+    if (std.mem.eql(u8, cmd, "json")) {
+        var ex = readOrFail(arena, io, in_path) orelse {
+            try out.writeAll("{}\n");
+            return;
+        };
+        defer ex.deinit();
+        try wexif.json.write(&ex, out, .{});
+        try out.writeByte('\n');
         return;
     }
 

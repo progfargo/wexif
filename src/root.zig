@@ -17,6 +17,7 @@ pub const Exif = @import("Exif.zig");
 pub const tags = @import("tags.zig");
 pub const Tag = tags.Tag;
 pub const jpeg = @import("jpeg.zig");
+pub const json = @import("json.zig");
 
 const types = @import("types.zig");
 pub const IfdKind = types.IfdKind;
@@ -41,6 +42,12 @@ pub fn writeJpeg(gpa: Allocator, data: []const u8, exif: ?*const Exif) ![]u8 {
     const tiff = try ex.serialize(gpa);
     defer gpa.free(tiff);
     return jpeg.replaceExif(gpa, data, tiff);
+}
+
+/// Returns all EXIF data as a pretty-printed JSON string. Caller owns the memory.
+/// See `json` for the output format and `json.write` for options and streaming.
+pub fn exifToJson(gpa: Allocator, exif: *const Exif) error{OutOfMemory}![]u8 {
+    return json.alloc(gpa, exif, .{});
 }
 
 /// Reads a JPEG file and parses its EXIF block.
@@ -143,6 +150,7 @@ test {
     _ = Exif;
     _ = tags;
     _ = jpeg;
+    _ = json;
 }
 
 test "readJpeg / writeJpeg roundtrip" {
