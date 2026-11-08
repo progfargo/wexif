@@ -130,6 +130,22 @@ pub fn removeThumbnail(self: *Exif) void {
     self.clear(.ifd1);
 }
 
+/// Removes all entries from every IFD and the thumbnail, and frees their memory.
+/// Values previously returned by `get`/`entries` become invalid.
+/// Writing an empty block with `wexif.writeJpeg` removes the EXIF segment entirely.
+pub fn clearAll(self: *Exif) void {
+    _ = self.arena.reset(.retain_capacity);
+    self.ifds = @splat(.empty);
+    self.thumbnail = null;
+}
+
+/// True if there are no entries in any IFD and no thumbnail.
+pub fn isEmpty(self: *const Exif) bool {
+    if (self.thumbnail != null) return false;
+    for (self.ifds) |list| if (list.items.len > 0) return false;
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // GPS helpers
 
@@ -556,6 +572,26 @@ test "roundtrip all IFDs, both byte orders" {
         try testing.expect(back.get(.ifd0, tags.exif_ifd_pointer) == null);
         try testing.expectError(error.ReservedTag, back.setLong(.ifd0, tags.gps_ifd_pointer, 1));
     }
+}
+
+test "clearAll" {
+    var ex = Exif.init(testing.allocator, .little);
+    defer ex.deinit();
+    try ex.setString(.ifd0, 0x010F, "Make");
+    try ex.setRational(.exif, 0x829A, 1, 60);
+    try ex.setGps(.{ .latitude = 1, .longitude = 2 });
+    try ex.setString(.interop, 0x0001, "R98");
+    try ex.setShort(.ifd1, 0x0103, 6);
+    ex.thumbnail = "thumb";
+    try testing.expect(!ex.isEmpty());
+
+    ex.clearAll();
+    try testing.expect(ex.isEmpty());
+    for (std.meta.tags(IfdKind)) |k| try testing.expectEqual(@as(usize, 0), ex.entries(k).len);
+
+    // Still usable after clearing.
+    try ex.setString(.ifd0, 0x013B, "again");
+    try testing.expectEqualStrings("again", ex.getString(.ifd0, 0x013B).?);
 }
 
 test "remove and clear" {

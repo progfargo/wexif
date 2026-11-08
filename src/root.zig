@@ -31,10 +31,11 @@ pub fn readJpeg(gpa: Allocator, data: []const u8) !?Exif {
     return try Exif.parse(gpa, tiff);
 }
 
-/// Returns a copy of `data` with its EXIF replaced by `exif`,
-/// or with all EXIF removed when `exif` is null. Caller owns the result.
+/// Returns a copy of `data` with its EXIF replaced by `exif`, or with the
+/// EXIF segment removed when `exif` is null or empty. Caller owns the result.
 pub fn writeJpeg(gpa: Allocator, data: []const u8, exif: ?*const Exif) ![]u8 {
     const ex = exif orelse return jpeg.replaceExif(gpa, data, null);
+    if (ex.isEmpty()) return jpeg.replaceExif(gpa, data, null);
     const tiff = try ex.serialize(gpa);
     defer gpa.free(tiff);
     return jpeg.replaceExif(gpa, data, tiff);
@@ -161,6 +162,13 @@ test "readJpeg / writeJpeg roundtrip" {
     const stripped = try writeJpeg(gpa, out, null);
     defer gpa.free(stripped);
     try std.testing.expectEqualStrings(img, stripped);
+
+    // An empty block removes the segment instead of writing an empty one.
+    back.clearAll();
+    const cleared = try writeJpeg(gpa, out, &back);
+    defer gpa.free(cleared);
+    try std.testing.expectEqualStrings(img, cleared);
+    try std.testing.expect(try readJpeg(gpa, cleared) == null);
 }
 
 test "parseValue" {

@@ -49,6 +49,7 @@ try exif.setGps(.{ .latitude = 41.0082, .longitude = 28.9784, .altitude = 35 });
 _ = exif.remove(.exif, 0xA434); // LensModel
 exif.clear(.gps);               // drop all location data
 exif.removeThumbnail();
+exif.clearAll();                // remove everything (writing it removes the EXIF segment)
 
 // Write back (pass null instead of &exif to strip all EXIF)
 const out = try wexif.writeJpeg(gpa, jpeg_bytes, &exif);
