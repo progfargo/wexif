@@ -12,7 +12,7 @@ A small, dependency-free Zig library (and CLI) for reading and editing EXIF meta
 ## Install
 
 ```sh
-zig fetch --save git+https://github.com/progfargo/wexif
+zig fetch --save git+https://github.com/progfargo/wexif#v0.1.0
 ```
 
 `build.zig`:
