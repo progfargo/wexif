@@ -26,6 +26,8 @@ pub const Value = types.Value;
 pub const Entry = types.Entry;
 pub const Rational = types.Rational;
 pub const SRational = types.SRational;
+pub const Orientation = types.Orientation;
+pub const DateTime = @import("DateTime.zig");
 
 /// Parses the EXIF block of a JPEG. Returns null if the image has none.
 /// The result does not reference `data`.
@@ -151,6 +153,7 @@ test {
     _ = tags;
     _ = jpeg;
     _ = json;
+    _ = DateTime;
 }
 
 test "readJpeg / writeJpeg roundtrip" {

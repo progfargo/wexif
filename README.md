@@ -28,7 +28,7 @@ Tags are referred to by name. Each name already knows which IFD it belongs to,
 so `.orientation` means IFD0's Orientation and `.exposure_time` means the Exif
 IFD's ExposureTime. All names are listed in [`src/tags.zig`](src/tags.zig).
 
-### Example: update orientation, dates, description and comment
+### Example: update orientation, date, description and comment
 
 ```zig
 const std = @import("std");
@@ -42,25 +42,45 @@ pub fn main(init: std.process.Init) !void {
     var exif = (try wexif.readFile(gpa, io, "photo.jpg")) orelse wexif.Exif.init(gpa, .little);
     defer exif.deinit();
 
-    // Orientation: 1 = normal, 3 = 180°, 6 = 90° CW, 8 = 90° CCW
-    try exif.setShort(.orientation, 1);
-
-    // Dates use the EXIF format "YYYY:MM:DD HH:MM:SS"
-    try exif.setString(.date_time_original, "2026:11:08 18:30:00"); // when the photo was taken
-    try exif.setString(.date_time_digitized, "2026:11:08 18:30:00");
-    try exif.setString(.date_time, "2026:11:08 18:30:00"); // last modified
-    try exif.setString(.offset_time_original, "+03:00"); // time zone
-
-    try exif.setString(.image_description, "Sunset over the Bosphorus");
-
-    // UserComment starts with an 8-byte character code ("ASCII\0\0\0" or "UNICODE\0")
-    const comment = try std.mem.concat(gpa, u8, &.{ "ASCII\x00\x00\x00", "Shot on a phone, unedited" });
-    defer gpa.free(comment);
-    try exif.set(.user_comment, .{ .undefined = comment });
+    try exif.setOrientation(.normal);
+    try exif.setDateTime(.{ .year = 2026, .month = 11, .day = 8, .hour = 18, .minute = 30, .utc_offset = 3 * 60 });
+    try exif.setDescription("Sunset over the Bosphorus");
+    try exif.setUserComment("Shot on a phone, unedited");
 
     try wexif.writeFile(gpa, io, "photo.jpg", "photo_new.jpg", &exif);
 }
 ```
+
+### Common fields
+
+These helpers cover the fields people edit most and handle their encoding details.
+
+```zig
+// Orientation: a display flag, it does not rotate pixels.
+// After rotating the pixels yourself, set it back to .normal.
+if (exif.getOrientation()) |o| std.debug.print("orientation: {t}\n", .{o}); // e.g. rotate_90_cw
+try exif.setOrientation(.rotate_90_cw);
+
+// Date taken: sets DateTimeOriginal, DateTimeDigitized and DateTime,
+// plus the OffsetTime* tags when utc_offset (minutes) is given.
+try exif.setDateTime(try wexif.DateTime.parse("2026-11-08T18:30:00+03:00"));
+if (exif.getDateTime()) |dt| std.debug.print("taken: {f}\n", .{dt}); // 2026:11:08 18:30:00 +03:00
+
+// ImageDescription
+try exif.setDescription("Sunset over the Bosphorus");
+if (exif.getDescription()) |d| std.debug.print("description: {s}\n", .{d});
+
+// UserComment: plain ASCII is stored as ASCII, anything else as UTF-16 ("UNICODE").
+try exif.setUserComment("Café \u{1F4F7}");
+if (try exif.getUserComment(gpa)) |c| {
+    defer gpa.free(c);
+    std.debug.print("comment: {s}\n", .{c});
+}
+```
+
+`DateTime.parse` accepts `"2026:11:08 18:30:00"`, `"2026-11-08 18:30:00"` and
+`"2026-11-08T18:30:00"`, each with an optional `+HH:MM`, `-HH:MM` or `Z`.
+Invalid dates (e.g. February 30) return `error.InvalidDateTime`.
 
 ### Reading
 

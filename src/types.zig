@@ -162,6 +162,23 @@ fn isPrintable(s: []const u8) bool {
     return true;
 }
 
+/// Value of the Orientation tag: how to transform the stored pixels for display.
+pub const Orientation = enum(u16) {
+    normal = 1,
+    mirror_horizontal = 2,
+    rotate_180 = 3,
+    mirror_vertical = 4,
+    mirror_horizontal_rotate_270_cw = 5,
+    rotate_90_cw = 6,
+    mirror_horizontal_rotate_90_cw = 7,
+    rotate_270_cw = 8,
+
+    /// Converts a raw tag value; null if out of range.
+    pub fn fromInt(v: u32) ?Orientation {
+        return if (v >= 1 and v <= 8) @fromBackingInt(@intCast(v)) else null;
+    }
+};
+
 /// A single tag in an IFD.
 pub const Entry = struct {
     tag: u16,

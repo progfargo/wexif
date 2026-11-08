@@ -17,6 +17,8 @@ const Value = types.Value;
 const Entry = types.Entry;
 const Rational = types.Rational;
 const Tag = tags.Tag;
+const Orientation = types.Orientation;
+const DateTime = @import("DateTime.zig");
 
 const Exif = @This();
 
@@ -145,6 +147,127 @@ pub fn isEmpty(self: *const Exif) bool {
     if (self.thumbnail != null) return false;
     for (self.ifds) |list| if (list.items.len > 0) return false;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Common fields
+
+/// Reads the image orientation (IFD0). Null if absent or out of range.
+pub fn getOrientation(self: *const Exif) ?Orientation {
+    return Orientation.fromInt(self.getUint(.orientation) orelse return null);
+}
+
+/// Sets the image orientation (IFD0). This only flags how viewers should
+/// display the image; it does not rotate pixels. After rotating the pixels
+/// yourself, set it to `.normal`.
+pub fn setOrientation(self: *Exif, orientation: Orientation) !void {
+    try self.setShort(.orientation, @backingInt(orientation));
+}
+
+/// Reads when the photo was taken: DateTimeOriginal, falling back to
+/// DateTimeDigitized and DateTime, with the matching OffsetTime* tag if present.
+/// Null if none is set or the value is not a valid date.
+pub fn getDateTime(self: *const Exif) ?DateTime {
+    const pairs = [_][2]Tag{
+        .{ .date_time_original, .offset_time_original },
+        .{ .date_time_digitized, .offset_time_digitized },
+        .{ .date_time, .offset_time },
+    };
+    for (pairs) |p| {
+        const text = self.getString(p[0]) orelse continue;
+        var dt = DateTime.parse(text) catch continue;
+        if (self.getString(p[1])) |o| dt.utc_offset = DateTime.parseOffset(o) catch null;
+        return dt;
+    }
+    return null;
+}
+
+/// Sets DateTimeOriginal, DateTimeDigitized and DateTime. If `dt.utc_offset`
+/// is set, the matching OffsetTime* tags are written too; otherwise existing
+/// offset tags are left unchanged.
+pub fn setDateTime(self: *Exif, dt: DateTime) !void {
+    try dt.validate();
+    const text = dt.exifString();
+    try self.setString(.date_time_original, &text);
+    try self.setString(.date_time_digitized, &text);
+    try self.setString(.date_time, &text);
+    if (dt.offsetString()) |o| {
+        try self.setString(.offset_time_original, &o);
+        try self.setString(.offset_time_digitized, &o);
+        try self.setString(.offset_time, &o);
+    }
+}
+
+/// Reads ImageDescription.
+pub fn getDescription(self: *const Exif) ?[]const u8 {
+    return self.getString(.image_description);
+}
+
+/// Sets ImageDescription. UTF-8 is stored as-is, which most tools expect.
+pub fn setDescription(self: *Exif, text: []const u8) !void {
+    try self.setString(.image_description, text);
+}
+
+const user_comment_ascii = "ASCII\x00\x00\x00";
+const user_comment_unicode = "UNICODE\x00";
+
+/// Reads UserComment as UTF-8, decoding its character code prefix.
+/// Caller owns the returned memory. Null if absent or in an unsupported encoding.
+pub fn getUserComment(self: *const Exif, gpa: Allocator) !?[]u8 {
+    const raw = switch (self.get(.user_comment) orelse return null) {
+        .undefined, .byte, .ascii => |b| b,
+        else => return null,
+    };
+    if (raw.len < 8) return null;
+    const code = raw[0..8];
+    const body = raw[8..];
+    if (std.mem.eql(u8, code, user_comment_ascii) or std.mem.allEqual(u8, code, 0)) {
+        return try gpa.dupe(u8, std.mem.trimEnd(u8, body, "\x00 "));
+    }
+    if (std.mem.eql(u8, code, user_comment_unicode)) {
+        const units = try gpa.alloc(u16, body.len / 2);
+        defer gpa.free(units);
+        var n: usize = 0;
+        for (units, 0..) |*u, i| {
+            const v = std.mem.readInt(u16, body[i * 2 ..][0..2], self.byte_order);
+            if (v == 0) break;
+            u.* = std.mem.nativeToLittle(u16, v);
+            n += 1;
+        }
+        return std.unicode.utf16LeToUtf8Alloc(gpa, units[0..n]) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => null,
+        };
+    }
+    return null;
+}
+
+/// Sets UserComment from UTF-8 text. Pure ASCII is stored with the "ASCII"
+/// code; anything else is stored as "UNICODE" (UTF-16 in the block's byte order).
+pub fn setUserComment(self: *Exif, text: []const u8) !void {
+    const gpa = self.allocator();
+    const is_ascii = for (text) |c| {
+        if (c >= 0x80) break false;
+    } else true;
+
+    const buf = if (is_ascii) blk: {
+        const b = try gpa.alloc(u8, 8 + text.len);
+        @memcpy(b[0..8], user_comment_ascii);
+        @memcpy(b[8..], text);
+        break :blk b;
+    } else blk: {
+        const units = std.unicode.utf8ToUtf16LeAlloc(gpa, text) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.InvalidUtf8 => return error.InvalidUtf8,
+        };
+        const b = try gpa.alloc(u8, 8 + units.len * 2);
+        @memcpy(b[0..8], user_comment_unicode);
+        for (units, 0..) |u, i| {
+            std.mem.writeInt(u16, b[8 + i * 2 ..][0..2], std.mem.littleToNative(u16, u), self.byte_order);
+        }
+        break :blk b;
+    };
+    try self.set(.user_comment, .{ .undefined = buf });
 }
 
 // ---------------------------------------------------------------------------
@@ -593,6 +716,65 @@ test "clearAll" {
     // Still usable after clearing.
     try ex.setString(.artist, "again");
     try testing.expectEqualStrings("again", ex.getString(.artist).?);
+}
+
+test "common field helpers roundtrip" {
+    for ([_]Endian{ .little, .big }) |bo| {
+        var ex = Exif.init(testing.allocator, bo);
+        defer ex.deinit();
+        try testing.expect(ex.getOrientation() == null);
+        try testing.expect(ex.getDateTime() == null);
+
+        try ex.setOrientation(.rotate_90_cw);
+        try ex.setDateTime(.{ .year = 2026, .month = 11, .day = 8, .hour = 18, .minute = 30, .utc_offset = 180 });
+        try ex.setDescription("Sunset over the Bosphorus");
+        try ex.setUserComment("Plain ASCII comment");
+
+        const bytes = try ex.serialize(testing.allocator);
+        defer testing.allocator.free(bytes);
+        var back = try Exif.parse(testing.allocator, bytes);
+        defer back.deinit();
+
+        try testing.expectEqual(Orientation.rotate_90_cw, back.getOrientation().?);
+        try testing.expectEqual(@as(u32, 6), back.getUint(.orientation).?);
+        const dt = back.getDateTime().?;
+        try testing.expectEqual(@as(u8, 30), dt.minute);
+        try testing.expectEqual(@as(i16, 180), dt.utc_offset.?);
+        try testing.expectEqualStrings("2026:11:08 18:30:00", back.getString(.date_time).?);
+        try testing.expectEqualStrings("+03:00", back.getString(.offset_time_digitized).?);
+        try testing.expectEqualStrings("Sunset over the Bosphorus", back.getDescription().?);
+
+        const ascii = (try back.getUserComment(testing.allocator)).?;
+        defer testing.allocator.free(ascii);
+        try testing.expectEqualStrings("Plain ASCII comment", ascii);
+        try testing.expectEqualStrings("ASCII\x00\x00\x00", back.get(.user_comment).?.undefined[0..8]);
+
+        try back.setUserComment("Caf\u{e9} \u{1F4F7}"); // non-ASCII incl. a surrogate pair
+        try testing.expectEqualStrings("UNICODE\x00", back.get(.user_comment).?.undefined[0..8]);
+        const uni = (try back.getUserComment(testing.allocator)).?;
+        defer testing.allocator.free(uni);
+        try testing.expectEqualStrings("Caf\u{e9} \u{1F4F7}", uni);
+    }
+}
+
+test "common field helpers reject bad input" {
+    var ex = Exif.init(testing.allocator, .little);
+    defer ex.deinit();
+    try testing.expectError(error.InvalidDateTime, ex.setDateTime(.{ .year = 2026, .month = 2, .day = 30 }));
+    try testing.expectError(error.InvalidUtf8, ex.setUserComment("bad \xff utf8"));
+
+    // Without an offset, existing offset tags are kept.
+    try ex.setString(.offset_time_original, "+01:00");
+    try ex.setDateTime(.{ .year = 2020, .month = 1, .day = 1 });
+    try testing.expectEqual(@as(i16, 60), ex.getDateTime().?.utc_offset.?);
+
+    // Cameras sometimes write blanks for an unknown date.
+    try ex.setString(.date_time_original, "    :  :     :  :  ");
+    try ex.setString(.date_time_digitized, "2019:05:06 07:08:09");
+    try testing.expectEqual(@as(u16, 2019), ex.getDateTime().?.year);
+
+    try ex.setShort(.orientation, 42);
+    try testing.expect(ex.getOrientation() == null);
 }
 
 test "remove and clear" {
