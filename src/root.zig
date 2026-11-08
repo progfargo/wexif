@@ -199,3 +199,85 @@ test "parseValue" {
     try std.testing.expectError(error.InvalidValue, parseValue(a, .short, "abc"));
     try std.testing.expectError(error.InvalidValue, parseValue(a, .rational, "-1/2"));
 }
+
+// ---------------------------------------------------------------------------
+// Leak tests: every allocation in the full pipeline is made to fail once,
+// and std.testing checks that nothing leaks on each of those error paths.
+
+fn fullPipeline(gpa: Allocator, img: []const u8) !void {
+    var ex = (try readJpeg(gpa, img)) orelse Exif.init(gpa, .big);
+    defer ex.deinit();
+
+    try ex.setOrientation(.rotate_90_cw);
+    try ex.setDateTime(try DateTime.parse("2026-11-08T18:30:00+03:00"));
+    try ex.setDescription("Sunset");
+    try ex.setUserComment("Caf\u{e9} \u{1F4F7}");
+    try ex.setGps(.{ .latitude = 41.0, .longitude = 29.0, .altitude = 10 });
+    try ex.set(.lens_specification, .{ .rational = &.{ .{ .num = 24, .den = 1 }, .{ .num = 70, .den = 1 } } });
+    try ex.setString(.{ .kind = .exif, .num = 0xC0DE }, "custom");
+    ex.thumbnail = "\xFF\xD8thumb\xFF\xD9";
+    _ = ex.remove(.artist);
+
+    if (try ex.getUserComment(gpa)) |c| gpa.free(c);
+
+    const json_text = try exifToJson(gpa, &ex);
+    defer gpa.free(json_text);
+
+    const out = try writeJpeg(gpa, img, &ex);
+    defer gpa.free(out);
+
+    var back = (try readJpeg(gpa, out)).?;
+    defer back.deinit();
+    back.clearAll();
+    try back.setString(.artist, "again");
+    const out2 = try writeJpeg(gpa, out, &back);
+    defer gpa.free(out2);
+
+    const v = try parseValue(gpa, .rational, "1/250, 2.8");
+    freeValue(gpa, v);
+}
+
+test "no leaks on any allocation failure" {
+    const img = "\xFF\xD8\xFF\xE0\x00\x07JFIF\x00\xFF\xDA\x00\x03\x00scan\xFF\xD9";
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, fullPipeline, .{img});
+
+    // Again starting from an image that already has EXIF.
+    var ex = Exif.init(std.testing.allocator, .little);
+    defer ex.deinit();
+    try ex.setString(.make, "Canon");
+    try ex.setGps(.{ .latitude = 1, .longitude = 2 });
+    const with_exif = try writeJpeg(std.testing.allocator, img, &ex);
+    defer std.testing.allocator.free(with_exif);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, fullPipeline, .{with_exif});
+}
+
+test "file helpers do not leak" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const img = "\xFF\xD8\xFF\xDA\x00\x03\x00scan\xFF\xD9";
+    try tmp.dir.writeFile(io, .{ .sub_path = "in.jpg", .data = img });
+
+    var path_buf: [256]u8 = undefined;
+    const in_path = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/in.jpg", .{tmp.sub_path});
+    var out_buf: [256]u8 = undefined;
+    const out_path = try std.fmt.bufPrint(&out_buf, ".zig-cache/tmp/{s}/out.jpg", .{tmp.sub_path});
+
+    try std.testing.expect(try readFile(gpa, io, in_path) == null);
+
+    var ex = Exif.init(gpa, .little);
+    defer ex.deinit();
+    try ex.setDescription("from file");
+    try writeFile(gpa, io, in_path, out_path, &ex);
+
+    var back = (try readFile(gpa, io, out_path)).?;
+    defer back.deinit();
+    try std.testing.expectEqualStrings("from file", back.getDescription().?);
+
+    // In-place rewrite and stripping.
+    try writeFile(gpa, io, out_path, out_path, null);
+    try std.testing.expect(try readFile(gpa, io, out_path) == null);
+    try std.testing.expectError(error.FileNotFound, readFile(gpa, io, "does/not/exist.jpg"));
+}
