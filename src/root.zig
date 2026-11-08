@@ -3,7 +3,8 @@
 //! ```zig
 //! var exif = (try wexif.readJpeg(gpa, jpeg_bytes)) orelse wexif.Exif.init(gpa, .little);
 //! defer exif.deinit();
-//! try exif.setString(.ifd0, wexif.tags.find("Artist").?.tag, "Me");
+//! try exif.setString(.artist, "Me");
+//! try exif.setShort(.orientation, 1);
 //! exif.clear(.gps);
 //! const out = try wexif.writeJpeg(gpa, jpeg_bytes, &exif);
 //! defer gpa.free(out);
@@ -14,6 +15,7 @@ const Allocator = std.mem.Allocator;
 
 pub const Exif = @import("Exif.zig");
 pub const tags = @import("tags.zig");
+pub const Tag = tags.Tag;
 pub const jpeg = @import("jpeg.zig");
 
 const types = @import("types.zig");
@@ -151,13 +153,13 @@ test "readJpeg / writeJpeg roundtrip" {
 
     var ex = Exif.init(gpa, .big);
     defer ex.deinit();
-    try ex.setString(.ifd0, tags.find("Artist").?.tag, "Erdem");
+    try ex.setString(.artist, "Erdem");
     const out = try writeJpeg(gpa, img, &ex);
     defer gpa.free(out);
 
     var back = (try readJpeg(gpa, out)).?;
     defer back.deinit();
-    try std.testing.expectEqualStrings("Erdem", back.getString(.ifd0, 0x013B).?);
+    try std.testing.expectEqualStrings("Erdem", back.getString(.artist).?);
 
     const stripped = try writeJpeg(gpa, out, null);
     defer gpa.free(stripped);

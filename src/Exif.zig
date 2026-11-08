@@ -16,6 +16,7 @@ const Type = types.Type;
 const Value = types.Value;
 const Entry = types.Entry;
 const Rational = types.Rational;
+const Tag = tags.Tag;
 
 const Exif = @This();
 
@@ -56,66 +57,66 @@ pub fn entries(self: *const Exif, kind: IfdKind) []const Entry {
     return self.ifds[@backingInt(kind)].items;
 }
 
-fn indexOf(self: *const Exif, kind: IfdKind, tag: u16) ?usize {
-    for (self.entries(kind), 0..) |e, i| {
-        if (e.tag == tag) return i;
+fn indexOf(self: *const Exif, tag: Tag) ?usize {
+    for (self.entries(tag.kind), 0..) |e, i| {
+        if (e.tag == tag.num) return i;
     }
     return null;
 }
 
 /// Returns the tag's value, or null if absent.
-pub fn get(self: *const Exif, kind: IfdKind, tag: u16) ?Value {
-    const i = self.indexOf(kind, tag) orelse return null;
-    return self.entries(kind)[i].value;
+pub fn get(self: *const Exif, tag: Tag) ?Value {
+    const i = self.indexOf(tag) orelse return null;
+    return self.entries(tag.kind)[i].value;
 }
 
 /// Returns an ASCII tag as text (without trailing NUL).
-pub fn getString(self: *const Exif, kind: IfdKind, tag: u16) ?[]const u8 {
-    return (self.get(kind, tag) orelse return null).string();
+pub fn getString(self: *const Exif, tag: Tag) ?[]const u8 {
+    return (self.get(tag) orelse return null).string();
 }
 
 /// Returns the first component of a byte/short/long tag.
-pub fn getUint(self: *const Exif, kind: IfdKind, tag: u16) ?u32 {
-    return (self.get(kind, tag) orelse return null).uint();
+pub fn getUint(self: *const Exif, tag: Tag) ?u32 {
+    return (self.get(tag) orelse return null).uint();
 }
 
 /// Sets (adds or replaces) a tag. The value is copied.
-pub fn set(self: *Exif, kind: IfdKind, tag: u16, value: Value) !void {
-    if (isPointerTag(kind, tag)) return error.ReservedTag;
+pub fn set(self: *Exif, tag: Tag, value: Value) !void {
+    if (isPointerTag(tag.kind, tag.num)) return error.ReservedTag;
     const owned = try value.dupe(self.allocator());
-    const list = &self.ifds[@backingInt(kind)];
-    if (self.indexOf(kind, tag)) |i| {
+    const list = &self.ifds[@backingInt(tag.kind)];
+    if (self.indexOf(tag)) |i| {
         list.items[i].value = owned;
     } else {
-        try list.append(self.allocator(), .{ .tag = tag, .value = owned });
+        try list.append(self.allocator(), .{ .tag = tag.num, .value = owned });
     }
 }
 
 /// Sets an ASCII tag. A NUL terminator is added.
-pub fn setString(self: *Exif, kind: IfdKind, tag: u16, text: []const u8) !void {
+pub fn setString(self: *Exif, tag: Tag, text: []const u8) !void {
     const buf = try self.allocator().alloc(u8, text.len + 1);
     @memcpy(buf[0..text.len], text);
     buf[text.len] = 0;
     // `set` copies again; acceptable for small strings and keeps one code path.
-    try self.set(kind, tag, .{ .ascii = buf });
+    try self.set(tag, .{ .ascii = buf });
 }
 
-pub fn setShort(self: *Exif, kind: IfdKind, tag: u16, v: u16) !void {
-    try self.set(kind, tag, .{ .short = &.{v} });
+pub fn setShort(self: *Exif, tag: Tag, v: u16) !void {
+    try self.set(tag, .{ .short = &.{v} });
 }
 
-pub fn setLong(self: *Exif, kind: IfdKind, tag: u16, v: u32) !void {
-    try self.set(kind, tag, .{ .long = &.{v} });
+pub fn setLong(self: *Exif, tag: Tag, v: u32) !void {
+    try self.set(tag, .{ .long = &.{v} });
 }
 
-pub fn setRational(self: *Exif, kind: IfdKind, tag: u16, num: u32, den: u32) !void {
-    try self.set(kind, tag, .{ .rational = &.{.{ .num = num, .den = den }} });
+pub fn setRational(self: *Exif, tag: Tag, num: u32, den: u32) !void {
+    try self.set(tag, .{ .rational = &.{.{ .num = num, .den = den }} });
 }
 
 /// Removes a tag. Returns true if it existed.
-pub fn remove(self: *Exif, kind: IfdKind, tag: u16) bool {
-    const i = self.indexOf(kind, tag) orelse return false;
-    _ = self.ifds[@backingInt(kind)].orderedRemove(i);
+pub fn remove(self: *Exif, tag: Tag) bool {
+    const i = self.indexOf(tag) orelse return false;
+    _ = self.ifds[@backingInt(tag.kind)].orderedRemove(i);
     return true;
 }
 
@@ -158,17 +159,17 @@ pub const GpsCoordinates = struct {
 
 /// Reads GPS coordinates in decimal degrees.
 pub fn getGps(self: *const Exif) ?GpsCoordinates {
-    const lat = dmsToDegrees(self.get(.gps, 0x0002) orelse return null) orelse return null;
-    const lon = dmsToDegrees(self.get(.gps, 0x0004) orelse return null) orelse return null;
-    const lat_ref = self.getString(.gps, 0x0001) orelse "N";
-    const lon_ref = self.getString(.gps, 0x0003) orelse "E";
+    const lat = dmsToDegrees(self.get(.gps_latitude) orelse return null) orelse return null;
+    const lon = dmsToDegrees(self.get(.gps_longitude) orelse return null) orelse return null;
+    const lat_ref = self.getString(.gps_latitude_ref) orelse "N";
+    const lon_ref = self.getString(.gps_longitude_ref) orelse "E";
     var result: GpsCoordinates = .{
         .latitude = if (std.mem.startsWith(u8, lat_ref, "S")) -lat else lat,
         .longitude = if (std.mem.startsWith(u8, lon_ref, "W")) -lon else lon,
     };
-    if (self.get(.gps, 0x0006)) |alt| switch (alt) {
+    if (self.get(.gps_altitude)) |alt| switch (alt) {
         .rational => |r| if (r.len > 0) {
-            const below = (self.getUint(.gps, 0x0005) orelse 0) == 1;
+            const below = (self.getUint(.gps_altitude_ref) orelse 0) == 1;
             const m = r[0].toFloat();
             result.altitude = if (below) -m else m;
         },
@@ -182,15 +183,15 @@ pub fn setGps(self: *Exif, coords: GpsCoordinates) !void {
     if (!std.math.isFinite(coords.latitude) or @abs(coords.latitude) > 90) return error.InvalidCoordinate;
     if (!std.math.isFinite(coords.longitude) or @abs(coords.longitude) > 180) return error.InvalidCoordinate;
 
-    if (self.get(.gps, 0x0000) == null) try self.set(.gps, 0x0000, .{ .byte = &.{ 2, 3, 0, 0 } });
-    try self.setString(.gps, 0x0001, if (coords.latitude < 0) "S" else "N");
-    try self.set(.gps, 0x0002, .{ .rational = &degreesToDms(@abs(coords.latitude)) });
-    try self.setString(.gps, 0x0003, if (coords.longitude < 0) "W" else "E");
-    try self.set(.gps, 0x0004, .{ .rational = &degreesToDms(@abs(coords.longitude)) });
+    if (self.get(.gps_version_id) == null) try self.set(.gps_version_id, .{ .byte = &.{ 2, 3, 0, 0 } });
+    try self.setString(.gps_latitude_ref, if (coords.latitude < 0) "S" else "N");
+    try self.set(.gps_latitude, .{ .rational = &degreesToDms(@abs(coords.latitude)) });
+    try self.setString(.gps_longitude_ref, if (coords.longitude < 0) "W" else "E");
+    try self.set(.gps_longitude, .{ .rational = &degreesToDms(@abs(coords.longitude)) });
     if (coords.altitude) |alt| {
         if (!std.math.isFinite(alt) or @abs(alt) > 1e6) return error.InvalidCoordinate;
-        try self.set(.gps, 0x0005, .{ .byte = &.{if (alt < 0) 1 else 0} });
-        try self.setRational(.gps, 0x0006, @intFromFloat(@round(@abs(alt) * 100)), 100);
+        try self.set(.gps_altitude_ref, .{ .byte = &.{if (alt < 0) 1 else 0} });
+        try self.setRational(.gps_altitude, @intFromFloat(@round(@abs(alt) * 100)), 100);
     }
 }
 
@@ -273,7 +274,7 @@ pub fn parse(gpa: Allocator, data: []const u8) ParseError!Exif {
 
     // Only JPEG thumbnails are supported; strip-based thumbnails are dropped
     // because their offsets could not be rewritten correctly.
-    if (self.indexOf(.ifd1, 0x0111) != null) {
+    if (self.indexOf(.{ .kind = .ifd1, .num = 0x0111 }) != null) {
         self.clear(.ifd1);
     } else if (p.thumb_offset != null and p.thumb_length != null) {
         const off = p.thumb_offset.?;
@@ -536,15 +537,15 @@ test "roundtrip all IFDs, both byte orders" {
         var ex = Exif.init(testing.allocator, bo);
         defer ex.deinit();
 
-        try ex.setString(.ifd0, 0x010F, "Wexif");
-        try ex.setString(.ifd0, 0x0110, "Model X with a long name");
-        try ex.setShort(.ifd0, 0x0112, 6);
-        try ex.setRational(.exif, 0x829A, 1, 250);
-        try ex.set(.exif, 0x9204, .{ .srational = &.{.{ .num = -1, .den = 3 }} });
-        try ex.set(.exif, 0x9000, .{ .undefined = "0232" });
-        try ex.setString(.interop, 0x0001, "R98");
+        try ex.setString(.make, "Wexif");
+        try ex.setString(.model, "Model X with a long name");
+        try ex.setShort(.orientation, 6);
+        try ex.setRational(.exposure_time, 1, 250);
+        try ex.set(.exposure_bias_value, .{ .srational = &.{.{ .num = -1, .den = 3 }} });
+        try ex.set(.exif_version, .{ .undefined = "0232" });
+        try ex.setString(.interoperability_index, "R98");
         try ex.setGps(.{ .latitude = 41.0082, .longitude = -28.9784, .altitude = -12.5 });
-        try ex.set(.ifd1, 0x0103, .{ .short = &.{6} });
+        try ex.set(Tag.compression.in(.ifd1), .{ .short = &.{6} });
         ex.thumbnail = "\xFF\xD8fake-thumb\xFF\xD9";
 
         const bytes = try ex.serialize(testing.allocator);
@@ -554,13 +555,13 @@ test "roundtrip all IFDs, both byte orders" {
         defer back.deinit();
 
         try testing.expectEqual(bo, back.byte_order);
-        try testing.expectEqualStrings("Wexif", back.getString(.ifd0, 0x010F).?);
-        try testing.expectEqualStrings("Model X with a long name", back.getString(.ifd0, 0x0110).?);
-        try testing.expectEqual(@as(u32, 6), back.getUint(.ifd0, 0x0112).?);
-        try testing.expectEqual(@as(u32, 250), back.get(.exif, 0x829A).?.rational[0].den);
-        try testing.expectEqual(@as(i32, -1), back.get(.exif, 0x9204).?.srational[0].num);
-        try testing.expectEqualStrings("0232", back.get(.exif, 0x9000).?.undefined);
-        try testing.expectEqualStrings("R98", back.getString(.interop, 0x0001).?);
+        try testing.expectEqualStrings("Wexif", back.getString(.make).?);
+        try testing.expectEqualStrings("Model X with a long name", back.getString(.model).?);
+        try testing.expectEqual(@as(u32, 6), back.getUint(.orientation).?);
+        try testing.expectEqual(@as(u32, 250), back.get(.exposure_time).?.rational[0].den);
+        try testing.expectEqual(@as(i32, -1), back.get(.exposure_bias_value).?.srational[0].num);
+        try testing.expectEqualStrings("0232", back.get(.exif_version).?.undefined);
+        try testing.expectEqualStrings("R98", back.getString(.interoperability_index).?);
         try testing.expectEqualStrings(ex.thumbnail.?, back.thumbnail.?);
 
         const gps = back.getGps().?;
@@ -569,19 +570,19 @@ test "roundtrip all IFDs, both byte orders" {
         try testing.expectApproxEqAbs(@as(f64, -12.5), gps.altitude.?, 1e-6);
 
         // Pointer tags are hidden from callers.
-        try testing.expect(back.get(.ifd0, tags.exif_ifd_pointer) == null);
-        try testing.expectError(error.ReservedTag, back.setLong(.ifd0, tags.gps_ifd_pointer, 1));
+        try testing.expect(back.get(.{ .kind = .ifd0, .num = tags.exif_ifd_pointer }) == null);
+        try testing.expectError(error.ReservedTag, back.setLong(.{ .kind = .ifd0, .num = tags.gps_ifd_pointer }, 1));
     }
 }
 
 test "clearAll" {
     var ex = Exif.init(testing.allocator, .little);
     defer ex.deinit();
-    try ex.setString(.ifd0, 0x010F, "Make");
-    try ex.setRational(.exif, 0x829A, 1, 60);
+    try ex.setString(.make, "Make");
+    try ex.setRational(.exposure_time, 1, 60);
     try ex.setGps(.{ .latitude = 1, .longitude = 2 });
-    try ex.setString(.interop, 0x0001, "R98");
-    try ex.setShort(.ifd1, 0x0103, 6);
+    try ex.setString(.interoperability_index, "R98");
+    try ex.setShort(Tag.compression.in(.ifd1), 6);
     ex.thumbnail = "thumb";
     try testing.expect(!ex.isEmpty());
 
@@ -590,17 +591,17 @@ test "clearAll" {
     for (std.meta.tags(IfdKind)) |k| try testing.expectEqual(@as(usize, 0), ex.entries(k).len);
 
     // Still usable after clearing.
-    try ex.setString(.ifd0, 0x013B, "again");
-    try testing.expectEqualStrings("again", ex.getString(.ifd0, 0x013B).?);
+    try ex.setString(.artist, "again");
+    try testing.expectEqualStrings("again", ex.getString(.artist).?);
 }
 
 test "remove and clear" {
     var ex = Exif.init(testing.allocator, .little);
     defer ex.deinit();
-    try ex.setString(.ifd0, 0x013B, "me");
+    try ex.setString(.artist, "me");
     try ex.setGps(.{ .latitude = 1, .longitude = 2 });
-    try testing.expect(ex.remove(.ifd0, 0x013B));
-    try testing.expect(!ex.remove(.ifd0, 0x013B));
+    try testing.expect(ex.remove(.artist));
+    try testing.expect(!ex.remove(.artist));
     ex.clear(.gps);
 
     const bytes = try ex.serialize(testing.allocator);
@@ -625,7 +626,7 @@ test "parse rejects garbage and cycles without crashing" {
 test "parse is safe on truncated input" {
     var ex = Exif.init(testing.allocator, .big);
     defer ex.deinit();
-    try ex.setString(.ifd0, 0x010F, "Truncation test make");
+    try ex.setString(.make, "Truncation test make");
     try ex.setGps(.{ .latitude = 10, .longitude = 20 });
     const bytes = try ex.serialize(testing.allocator);
     defer testing.allocator.free(bytes);

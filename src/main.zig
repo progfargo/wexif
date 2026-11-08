@@ -59,12 +59,12 @@ pub fn main(init: std.process.Init) !void {
             const spec = parseTag(arg[0..eq]);
             const value = wexif.parseValue(arena, spec.type, arg[eq + 1 ..]) catch
                 fatal("set: invalid {t} value '{s}'", .{ spec.type, arg[eq + 1 ..] });
-            ex.set(spec.kind, spec.tag, value) catch |err| fatal("set {s}: {t}", .{ arg[0..eq], err });
+            ex.set(spec.tag, value) catch |err| fatal("set {s}: {t}", .{ arg[0..eq], err });
         }
     } else if (std.mem.eql(u8, cmd, "rm")) {
         for (rest) |arg| {
             const spec = parseTag(arg);
-            if (!ex.remove(spec.kind, spec.tag)) std.debug.print("warning: {s} not present\n", .{arg});
+            if (!ex.remove(spec.tag)) std.debug.print("warning: {s} not present\n", .{arg});
         }
     } else if (std.mem.eql(u8, cmd, "gps")) {
         if (rest.len < 2) fatal("gps: need <lat> <lon>", .{});
@@ -94,7 +94,7 @@ fn writeOrFail(gpa: std.mem.Allocator, io: Io, in_path: []const u8, out_path: []
     wexif.writeFile(gpa, io, in_path, out_path, ex) catch |err| fatal("{s}: {t}", .{ out_path, err });
 }
 
-const TagSpec = struct { kind: IfdKind, tag: u16, type: wexif.Type };
+const TagSpec = struct { tag: wexif.Tag, type: wexif.Type };
 
 /// Parses `[ifd.]Name` or `ifd.0xNNNN:type`.
 fn parseTag(text: []const u8) TagSpec {
@@ -108,10 +108,10 @@ fn parseTag(text: []const u8) TagSpec {
         const colon = std.mem.indexOfScalar(u8, name, ':') orelse fatal("raw tag needs a type: {s}:ascii", .{text});
         const tag = std.fmt.parseInt(u16, name[0..colon], 0) catch fatal("bad tag number '{s}'", .{name[0..colon]});
         const ty = std.meta.stringToEnum(wexif.Type, name[colon + 1 ..]) orelse fatal("unknown type '{s}'", .{name[colon + 1 ..]});
-        return .{ .kind = kind orelse .ifd0, .tag = tag, .type = ty };
+        return .{ .tag = .{ .kind = kind orelse .ifd0, .num = tag }, .type = ty };
     }
     const info = wexif.tags.find(name) orelse fatal("unknown tag '{s}' (use IFD.0xNNNN:TYPE for raw tags)", .{name});
-    return .{ .kind = kind orelse info.kind, .tag = info.tag, .type = info.type };
+    return .{ .tag = info.tag.in(kind orelse info.tag.kind), .type = info.type };
 }
 
 fn show(w: *Io.Writer, ex: *const Exif) !void {
@@ -121,7 +121,7 @@ fn show(w: *Io.Writer, ex: *const Exif) !void {
         if (list.len > 0) {
             try w.print("\n[{t}]\n", .{kind});
             for (list) |e| {
-                const name = wexif.tags.name(kind, e.tag) orelse "?";
+                const name = wexif.tags.name(.{ .kind = kind, .num = e.tag }) orelse "?";
                 try w.print("  0x{x:0>4} {s:<26} {t:<9} {f}\n", .{ e.tag, name, e.value.typ(), e.value });
             }
         }

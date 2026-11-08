@@ -24,39 +24,102 @@ exe.root_module.addImport("wexif", wexif.module("wexif"));
 
 ## Library usage
 
+Tags are referred to by name. Each name already knows which IFD it belongs to,
+so `.orientation` means IFD0's Orientation and `.exposure_time` means the Exif
+IFD's ExposureTime. All names are listed in [`src/tags.zig`](src/tags.zig).
+
+### Example: update orientation, dates, description and comment
+
 ```zig
+const std = @import("std");
 const wexif = @import("wexif");
 
-// Parse from memory (returns null if the JPEG has no EXIF)
-var exif = (try wexif.readJpeg(gpa, jpeg_bytes)) orelse wexif.Exif.init(gpa, .little);
-defer exif.deinit();
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
 
-// Read
-if (exif.getString(.ifd0, 0x010F)) |make| std.debug.print("Make: {s}\n", .{make});
-if (exif.getUint(.ifd0, 0x0112)) |orientation| _ = orientation;
-if (exif.getGps()) |g| std.debug.print("{d}, {d}\n", .{ g.latitude, g.longitude });
+    // Read (create an empty block if the image has no EXIF)
+    var exif = (try wexif.readFile(gpa, io, "photo.jpg")) orelse wexif.Exif.init(gpa, .little);
+    defer exif.deinit();
 
-// Iterate everything
-for (exif.entries(.exif)) |e| {
-    std.debug.print("{s} = {f}\n", .{ wexif.tags.name(.exif, e.tag) orelse "?", e.value });
+    // Orientation: 1 = normal, 3 = 180°, 6 = 90° CW, 8 = 90° CCW
+    try exif.setShort(.orientation, 1);
+
+    // Dates use the EXIF format "YYYY:MM:DD HH:MM:SS"
+    try exif.setString(.date_time_original, "2026:11:08 18:30:00"); // when the photo was taken
+    try exif.setString(.date_time_digitized, "2026:11:08 18:30:00");
+    try exif.setString(.date_time, "2026:11:08 18:30:00"); // last modified
+    try exif.setString(.offset_time_original, "+03:00"); // time zone
+
+    try exif.setString(.image_description, "Sunset over the Bosphorus");
+
+    // UserComment starts with an 8-byte character code ("ASCII\0\0\0" or "UNICODE\0")
+    const comment = try std.mem.concat(gpa, u8, &.{ "ASCII\x00\x00\x00", "Shot on a phone, unedited" });
+    defer gpa.free(comment);
+    try exif.set(.user_comment, .{ .undefined = comment });
+
+    try wexif.writeFile(gpa, io, "photo.jpg", "photo_new.jpg", &exif);
 }
-
-// Edit
-try exif.setString(.ifd0, wexif.tags.find("Artist").?.tag, "Jane Doe");
-try exif.setRational(.exif, 0x829A, 1, 250); // ExposureTime
-try exif.set(.exif, 0x9204, .{ .srational = &.{.{ .num = -1, .den = 3 }} });
-try exif.setGps(.{ .latitude = 41.0082, .longitude = 28.9784, .altitude = 35 });
-_ = exif.remove(.exif, 0xA434); // LensModel
-exif.clear(.gps);               // drop all location data
-exif.removeThumbnail();
-exif.clearAll();                // remove everything (writing it removes the EXIF segment)
-
-// Write back (pass null instead of &exif to strip all EXIF)
-const out = try wexif.writeJpeg(gpa, jpeg_bytes, &exif);
-defer gpa.free(out);
 ```
 
-File helpers: `wexif.readFile(gpa, io, path)` and `wexif.writeFile(gpa, io, in_path, out_path, &exif)`.
+### Reading
+
+```zig
+const make = exif.getString(.make);              // ?[]const u8
+const orientation = exif.getUint(.orientation);  // ?u32
+const exposure = exif.get(.exposure_time);       // ?Value, e.g. .rational
+const location = exif.getGps();                  // ?{ latitude, longitude, altitude }
+
+// Iterate all entries of an IFD
+for (exif.entries(.exif)) |e| {
+    const name = wexif.tags.name(.{ .kind = .exif, .num = e.tag }) orelse "?";
+    std.debug.print("{s} = {f}\n", .{ name, e.value });
+}
+```
+
+### Editing
+
+```zig
+try exif.setString(.artist, "Jane Doe");
+try exif.setString(.copyright, "(c) 2026 Jane Doe");
+try exif.setRational(.exposure_time, 1, 250);
+try exif.setRational(.f_number, 28, 10);
+try exif.setShort(.iso_speed_ratings, 400);
+try exif.set(.exposure_bias_value, .{ .srational = &.{.{ .num = -1, .den = 3 }} });
+try exif.setGps(.{ .latitude = 41.0082, .longitude = 28.9784, .altitude = 35 });
+
+// Thumbnail IFD: same names, moved with `in`
+try exif.setShort(wexif.Tag.orientation.in(.ifd1), 1);
+
+// Tags without a name: give the IFD and number directly
+try exif.setString(.{ .kind = .exif, .num = 0xA431 }, "SN12345");
+
+// Look up a tag from a string (e.g. user input)
+const info = wexif.tags.find("LensModel").?;     // .tag, .name, .type
+_ = exif.remove(info.tag);
+```
+
+### Removing
+
+```zig
+_ = exif.remove(.lens_model);   // one tag; returns true if it existed
+exif.clear(.gps);               // a whole IFD, e.g. all location data
+exif.removeThumbnail();
+exif.clearAll();                // everything; writing it removes the EXIF segment
+```
+
+### Writing
+
+```zig
+// In memory (pass null instead of &exif to strip all EXIF)
+const out = try wexif.writeJpeg(gpa, jpeg_bytes, &exif);
+defer gpa.free(out);
+
+// File to file (in and out may be the same path)
+try wexif.writeFile(gpa, io, "photo.jpg", "photo_new.jpg", &exif);
+```
+
+All memory is owned by `Exif`; `set*` copies its input, and `deinit` frees everything.
 
 ## CLI
 
